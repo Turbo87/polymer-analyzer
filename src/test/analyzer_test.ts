@@ -380,30 +380,6 @@ suite('Analyzer', () => {
           ]);
     });
 
-    // TODO(justinfagnani): move into race condition tests?
-    test('handles a shared dependency', async() => {
-      let documents = await Promise.all([
-        analyzer.analyze('static/diamond/a.html'),
-        analyzer.analyze('static/diamond/root.html'),
-      ]);
-
-      const contents = documents.map((d) => d.parsedDocument.contents);
-      documents = await Promise.all([
-        analyzer.analyze('static/diamond/a.html', contents[0]),
-        analyzer.analyze('static/diamond/root.html'),
-      ]);
-
-      const root = documents[1];
-
-      const localFeatures = root.getFeatures(false);
-      const kinds = Array.from(localFeatures).map(f => Array.from(f.kinds));
-      assert.deepEqual(kinds, [
-        ['document', 'html-document'],
-        ['import', 'html-import'],
-        ['import', 'html-import']
-      ]);
-    });
-
   });
 
   // TODO: reconsider whether we should test these private methods.
@@ -830,6 +806,55 @@ suite('Analyzer', () => {
           analyzer.analyze('leaf.html', 'Hello'),
           analyzer.analyze('leaf.html', 'World')
         ]);
+      });
+
+      test('handles a shared dependency', async() => {
+        let documents = await Promise.all([
+          analyzer.analyze('static/diamond/a.html'),
+          analyzer.analyze('static/diamond/root.html'),
+        ]);
+
+        const contents = documents.map((d) => d.parsedDocument.contents);
+        documents = await Promise.all([
+          analyzer.analyze('static/diamond/a.html', contents[0]),
+          analyzer.analyze('static/diamond/root.html'),
+        ]);
+
+        const root = documents[1];
+
+        const localFeatures = root.getFeatures(false);
+        const kinds = Array.from(localFeatures).map(f => Array.from(f.kinds));
+        assert.deepEqual(kinds, [
+          ['document', 'html-document'],
+          ['import', 'html-import'],
+          ['import', 'html-import']
+        ]);
+      });
+
+      test('all files in a cycle wait for the whole cycle', async() => {
+        const loader = new DeterministicUrlLoader();
+        const analyzer = new Analyzer({urlLoader: loader});
+        const aAnalyzed = analyzer.analyze('a.html');
+        const bAnalyzed = analyzer.analyze('b.html');
+
+        loader.queue.resolve('a.html', `<link rel="import" href="b.html">
+            <link rel="import" href="c.html">`);
+        loader.queue.resolve('b.html', `<link rel="import" href="a.html">`);
+
+        let cResolved = false;
+        // Analysis shouldn't finish without c.html resolving
+        const aAnalyzedDone = aAnalyzed.then(() => {
+          assert.isTrue(cResolved);
+        });
+        const bAnalyzedDone = bAnalyzed.then(() => {
+          assert.isTrue(cResolved);
+        });
+        // flush the microtask queue
+        await Promise.resolve();
+        cResolved = true;
+        loader.queue.resolve('c.html', '');
+        // wait for the callback above to complete
+        await Promise.all([aAnalyzedDone, bAnalyzedDone]);
       });
 
       test.skip('something about the order of scanning?', async() => {
